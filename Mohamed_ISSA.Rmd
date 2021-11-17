@@ -1,0 +1,716 @@
+---
+title: "Sujet2"
+author: "Mohamed Issa"
+date: "16/05/2021"
+output:
+  html_document: default
+  df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=objects())
+library(tidyverse)
+library(latex2exp)
+library(numDeriv)
+library(coda)
+library(ggmcmc)
+```
+
+# Simulation
+
+### Question 1
+
+Calculer la fonction quantile $F^{-1}(p|\alpha,\kappa)$ de la loi de Weibull, et en déduire
+un algorithme de simulation de cette loi basée sur l’inversion générique
+
+----------------------------------------------------------------------
+
+En résolvant l'équation $F(t|\alpha,\kappa)=u$, on trouve:
+$t=(-\frac{\log(1-u))}{\alpha})^{\frac{1}{\kappa}}$
+
+```{r}
+
+#densité de la loi de Weibull
+my_pweibull <- function(x, kappa, alpha){
+  return( 1 - exp( -alpha*(t^kappa)  ) )
+}
+
+#fonction quantile de la loi de Weibull
+my_qweibull <- function(u, kappa, alpha){
+  return( (-log(1-u)/alpha )^(1/kappa) )
+}
+
+#simulation de la loi de Weibull
+my_rweibull <- function(n, kappa, alpha){
+  U = runif( n )
+  X = my_qweibull( U, kappa, alpha )
+  return( X )
+}
+
+```
+
+
+### Question 2
+
+Ecrire un programme R qui simule n observations de la loi de Weibull de
+paramètres alpha et kappa donnés, censurée au-dessus d’un niveau t0
+donné (concrètement, on censure au-dessus de t0 en remplaçant chaque
+valeur simulée T par min(T, t0)). Le programme renvoie le vecteur de données simulées, ordonné de telle sorte que les p premières observations
+ne soient pas censurées, ainsi que le nombre p.
+
+```{r}
+#fonction simulant un échantillon de loi de Weibull censuré au dessus d'un niveau t0 
+sim_cens_weib=function(n, kappa, alpha, t0){
+  res=numeric(n)      
+  X=my_rweibull(n,kappa, alpha)
+  ind=which(X<t0)
+  p=length(ind)
+  if (p>=1){
+   res[1:p]=X[ind] 
+  }
+  if (p+1<=n){
+    res[(p+1):n]=rep(t0,n-p)
+  }
+  return(list(sim=res,p=p))
+}
+```
+
+
+
+# Calcul de la vraisemblance
+
+
+### Question 3
+Montrer que la log-vraisemblance $l(t1:n|α, κ, p)$, dans le modèle de Weibull
+dont les n − p dernières données sont censurées à droites, s’écrit :
+$$
+l(t_{1:n}|α, κ, p)=p(\log(\alpha)+\log(\kappa))+(\kappa-1)\sum_{i=1}^p\log(t_i)-\alpha\sum_{i=1}^nt_i^\kappa
+$$
+
+
+----------------------------------------------------------------------
+
+
+Pour les observations $t_i$ non censurées, la vraisemblance est égale au produit des valeurs de la densité de Weibull prises en t_i.
+$$
+L(t_{i:1..p}|α, κ, p)=\prod_{i=1}^p \alpha\kappa t_i^{\kappa-1}exp(-\alpha t_i^\kappa)
+$$
+Par suite la log vraisemblance s'écrit:
+$$
+l((t_{i:1..p}|α, κ, p)=p\log(\alpha\kappa)+\sum_{i=1}^{p}(\kappa-1)\log(t_i)-\alpha t_i^\kappa
+$$
+
+Pour les données censurées à droites, la log-vraisemblance s'écrit à l'aide de la fonction queue de la loi de Weibull.
+$$
+l(t_{i:p+1..n}|α, κ, p)=\sum_{i=p+1}^{n}-\alpha t_i^\kappa
+$$
+En calculant la somme des deux expressions on obtient:
+$$
+l(t_{i:1..n}|α, κ, p)=p\log(\alpha\kappa)+\sum_{i=1}^{p}(\kappa-1)\log(t_i)-\alpha t_i^\kappa+\sum_{i=p+1}^{n}-\alpha t_i^\kappa \\
+=p(\log(\alpha)+\log(\kappa))+(\kappa-1)\sum_{i=1}^p\log(t_i)-\alpha\sum_{i=1}^nt_i^\kappa
+$$
+
+### Question 4
+Donner l’expression exacte du gradient, et de la matrice hessienne de $l$.
+
+----------------------------------------------------------------------
+
+Le gradient de $l$ est donné par:
+$$
+\nabla l=
+\begin{pmatrix}
+\frac{\partial l}{\partial \alpha} \\
+\frac{\partial l}{\partial \kappa}
+\end{pmatrix} \\
+=
+\begin{pmatrix}
+\frac{p}{\alpha}-\sum_{i=1}^nt_i^\kappa \\
+\frac{p}{\kappa}+\sum_{i=1}^p\log(t_i)-\alpha\sum_{i=1}^n\log(t_i)t_i^\kappa
+\end{pmatrix}
+$$
+
+La matrice hessienne de $l$ est donné par:
+
+$$
+\nabla^2 l=
+\begin{pmatrix}
+\frac{\partial^2 l}{\partial \alpha^2}& \frac{\partial^2 l}{\partial \kappa \partial \alpha}\\
+\frac{\partial^2 l}{\partial \alpha \partial \kappa}&\frac{\partial^2 l}{\partial \kappa^2} 
+\end{pmatrix} \\
+=
+\begin{pmatrix}
+\frac{-p}{\alpha^2} & 0 \\
+-\sum_{i=1}^\kappa\log(t_i)t_i^\kappa & \frac{-p}{\kappa^2}-\alpha \sum_{i=1}^\kappa(\log(t_i))^2t_i^\kappa
+\end{pmatrix}
+$$
+
+# Approche fréquentiste
+
+
+### Question 5
+
+Montrer que l’estimateur du maximum de vraisemblance $\hat\alpha_{MLE}$ se déduit
+de l’estimateur du maximum de vraisemblance $\hat\kappa_{MLE}$ à l’aide d’une forumule qu’on explicitera, puis montrer que pour calculer ce dernier il faut
+résoudre un problème d’optimisation en 1D.
+
+----------------------------------------------------------------------
+
+L'annulation du gradient de $l$ permet d'exprimer $\alpha$ en fonction de $\kappa$ sous la forme:
+
+$$
+\alpha=\frac{p}{\sum_{i=1}^nt_i^\kappa}
+$$
+
+Pour déterminer une estimation de $\kappa$, on maximise la log-vraisemblance profilée en injectant l'expression de $\alpha$ en fonction de $\kappa$. Ce qui amène à un problème d'optimisation en 1D.
+
+$$
+l(\alpha=\frac{p}{\sum_{i=1}^nt_i^\kappa},\kappa)=p(\log(p)-\log(\sum_{i=1}^nt_i^\kappa)+\log(\kappa))+(\kappa-1)\sum_{i=1}^p\log(t_i)-p
+$$
+
+### Question 6
+
+À l’aide de la fonction optimize, écrire un programme R qui prend en
+entrée le vecteur t des durées de fonctionnement observées ; le nombre p
+de données non censurées, et qui calcule les estimateurs du maximum de
+vraisemblance de $(\alpha,\kappa)$.
+
+```{r}
+#func: opposée de la vraisemblance profilée
+func=function(kappa,t,p){
+  -p*(log(p)-log(sum(t**kappa))+log(kappa))-(kappa-1)*(sum(log(t)[1:p]))
+}
+
+#MV: calcule les estimateurs de kappa et alpha par maximum de vraisemblance
+MV=function(t,p){
+  s=function(kappa) func(kappa,t=t,p=p) 
+  o=optimize(s,c(0.01,5))
+  k=o$minimum
+  a=p/sum(t**k)
+  return(list(kappa=k,alpha=a))
+}
+```
+
+
+
+
+### Question 7
+7 Estimer $(\alpha,\kappa)$ par maximum de vraisemblance 100 fois, à partir de 100
+jeux de données simulés à l’aide de la fonction écrite en première partie.
+
+```{r,eval = TRUE}
+n=1000       #taille de l'échantillon généré à chaque simulation
+nsim=100     #nombre de simulations
+alpha=5
+kappa=2
+t0=my_qweibull(0.6,kappa,alpha)
+
+alpha_hat=numeric(nsim)
+kappa_hat=numeric(nsim)
+for (i in 1:nsim){
+  l=sim_cens_weib(n,kappa,alpha,t0)
+  res=MV(l$sim,l$p)
+  alpha_hat[i]=res$alpha
+  kappa_hat[i]=res$kappa
+}
+
+
+biais_alpha=mean(alpha_hat)-alpha
+biais_kappa=mean(kappa_hat)-kappa
+print(biais_alpha)
+print(biais_alpha)
+
+var_alpha=mean((alpha-mean(alpha_hat))**2)
+var_kappa=mean((kappa-mean(kappa_hat))**2)
+print(var_alpha)
+print(var_kappa)
+
+cv_alpha=sqrt(var_alpha)/mean(alpha_hat)
+cv_kappa=sqrt(var_kappa)/mean(kappa_hat)
+print(cv_alpha)
+print(cv_kappa)
+```
+On remarque qu'on a un biais pas trop grand. Les variances et surtout le coefficient de variation reflètent une bonne précision au niveau des estimateurs.
+
+# Approche bayésienne
+
+
+### Question 8
+
+Montrer que, si la loi a priori sur $\alpha$ est la loi Gamma $\mathcal G(a, b)$, alors la loi
+a posteriori conditionnelle de $\alpha$ sachant$\kappa$, notée $\pi(\alpha|\kappa,t_{1:n},p)$, est encore
+une loi Gamma, dont on précisera les hyperparamètres.
+
+----------------------------------------------------------------------
+
+$$
+\pi(\alpha)  \sim \mathcal G(a, b)\propto\alpha^{a-1}e^{-b\alpha}
+$$
+
+La loi à posteriori conditionnelle de $\alpha$ sachant $\kappa$ s'écrit:
+
+$$
+\pi(\alpha|\kappa,t_{1:n},p) \propto L(t_{1:n}|\alpha,\kappa,p) \pi(\alpha) \\
+\propto \alpha^{p+a-1}e^{-\alpha\sum_{i=1}^nt_i^k}\alpha^{a-1}e^{-b\alpha}\\
+\propto \alpha^{p+a-1}e^{-(b+\sum_{i=1}^nt_i^\kappa)\alpha}
+$$
+On en déduit que:
+$$
+\pi(\alpha|\kappa,t_{1:n},p)  \sim \mathcal G(p+a, b+\sum_{i=1}^nt_i^k)
+$$
+
+----------------------------------------------------------------------
+
+Dans la suite, on prendra de même une loi a priori de type Gamma pour
+κ, de paramètres c et d, et on utilisera le choix "faiblement informatif"
+suivant : a = b = c = d = 10−3.
+
+
+
+### Question 9
+
+
+Montrer que la densité marginale a posteriori de κ est proportionnelle à :
+
+$$
+\pi(\kappa|t_{1:n},p) \propto \pi(\kappa) \kappa^p \prod_{i=1}^pt_i^{\kappa-1}(b+\sum_{i=1}^nt_i^\kappa)^{-(a+n)}
+$$
+----------------------------------------------------------------------
+
+On exprime $\pi(\alpha|\kappa,t_{1:n},p)$ en fonction de $\pi(\kappa|t_{1:n},p)$:
+
+$$
+\pi(\alpha|\kappa,p,t_{1:n})=\frac{\pi(\alpha,\kappa|p,t_{1:n})}{\pi(\kappa|p,t_{1:n})}
+$$
+Par suite:
+
+$$
+\pi(\kappa|p,t_{1:n})=\frac{\pi(\alpha,\kappa|p,t_{1:n})}{\pi(\alpha|\kappa,p,t_{1:n})}
+$$
+Or par indépendance des lois prior:
+$$
+\pi(\alpha,\kappa|p,t_{1:n})=\mathcal L(t_{1:n}|\kappa,\alpha,p) \pi(\alpha)\pi(\kappa)
+$$
+et on a:
+$$
+\pi(\alpha|\kappa,p,t_{1:n})=\alpha^{p+a-1}e^{-(b+\sum_{i=1}^nt_i^\kappa)\alpha}(b+\sum_{i=1}^nt_i^\kappa)^{(a+n)} 
+$$
+
+En écrivant le rapport on déduit:
+$$
+\pi(\kappa|p,t_{1:n})\propto\frac{\mathcal L(t_{1:n}|\kappa,\alpha,p) \pi(\alpha)\pi(\kappa)}{\alpha^{p+a-1}e^{-(b+\sum_{i=1}^nt_i^\kappa)\alpha}(b+\sum_{i=1}^nt_i^\kappa)^{-(a+n)}}\\
+\propto\frac{\pi(\kappa)\kappa^p\prod_{i=1}^pt_i^{\kappa-1}e^{-\alpha\sum_{i=1}^nt_i^\kappa}}{\alpha^{p+a-1}e^{-\alpha(b+\sum_{i=1}^nt_i^\kappa)}(b+\sum_{i=1}^nt_i^\kappa)^{(a+n)}}\\
+\propto \pi(\kappa)\kappa^p\prod_{i=1}^pt_i^{\kappa-1}(b+\sum_{i=1}^nt_i^\kappa)^{-(a+n)}
+$$
+----------------------------------------------------------------------
+
+a) Montrer en supposant que $t_{max}=max_it_i>1$ les équivalents suivants:
+$$
+\pi(\kappa|t_{1:n},p) \underset{k\to0^+}{\sim} \pi(\kappa)\kappa^p
+\\
+\pi(\kappa|t_{1:n},p) \underset{k\to \infty}{\sim} \pi(\kappa)t_{max}^{\kappa(a+n)}
+$$
+En déduire
+quelles contraintes doit respecter la loi instrumentale g pour que le rapport $\pi(\kappa|t_{1:n},p)/g(\kappa)$ reste borné.
+
+
+----------------------------------------------------------------------
+
+
+-quand $k\to0^+$, $\prod_{i=1}^pt_i^{\kappa-1}(b+\sum_{i=1}^nt_i^\kappa)^{-(a+n)} \to \prod_{i=1}^n\frac{1}{t_i}(b+n)^{-(a+n)}$
+Par suite:
+$$
+\pi(\kappa|t_{1:n},p) \underset{k\to0^+}{\sim} \pi(\kappa)\kappa^p
+$$
+-quand $k\to\infty$, $(b+\sum_{i=1}^nt_i^\kappa)^{-(a+n)} \to t_{max}^{\kappa(a+n)}$ car $t_{max}=max_it_i>1$.
+
+Par suite,
+$$
+\pi(\kappa|t_{1:n,p}) \underset{k\to \infty}{\sim} \pi(\kappa)t_{max}^{-\kappa(a+n)}
+$$
+
+
+Pour garantir la bornitude du rapport $\pi(\kappa|t_{1:n},p)/g(\kappa)$, il suffit d'imposer des conditions en observant le comportement aux bornes de l'ensemble de définition.
+
+
+
+-quand $k\to0^+$:
+$$
+\frac{\pi(\kappa|t_{1:n},p)}{g(\kappa)}\sim\frac{\kappa^n\kappa^{c-1}e^{-d\kappa}}{\kappa^{e-1}e^{-f\kappa}}
+\sim \kappa^{n+c-e}
+$$
+Pour garder un rapport borné, il suffit que $n+c-e \geq 0$ c-à-d $e \leq n+c$.
+
+-quand $k\to\infty$:
+
+$$
+\frac{\pi(\kappa|t_{1:n},p)}{g(\kappa)}\sim\frac{\kappa^{c-1}e^{-d\kappa}t_{max}^{-\kappa(a+n)}}{\kappa^{e-1}e^{-f\kappa}}\\
+\sim e^{(c-e)\log(\kappa)-\kappa[d-f+(a+n)\log(t_{max})]}
+$$
+
+*si $d-f+(a+n)\log(t_{max}) > 0$, alors le rapport est borné.
+
+*si $d-f+(a+n)\log(t_{max}) = 0$, alors le rapport est borné à condition que $c-e\leq0$.
+
+*si $d-f+(a+n)\log(t_{max}) < 0$, alort le rapport n'est pas borné.
+
+Par suite, pour garder la bornitude au voisinage de $\infty$ il faut et il suffit que e et f soient dans l'ensemble:
+
+$$
+\{d+(a+n)\log(t_{max}) > f\} \cup {\{\{d+(a+n)\log(t_{max}) = f\}\cap\{c\leq e\}}\}
+$$
+
+b) Calculer $\hat{\kappa}_{MAP}=arg max_\kappa$ $\pi(\kappa|t_{1:n},p)$ à l’aide de la fonction optimize
+et l’approximation de Laplace de la variance a posteriori de $\kappa$.
+----------------------------------------------------------------------
+
+```{r}
+setwd("C:/Users/issa/Desktop/TA/2ata/STA211/proj")
+d=read.csv("donnees_Weibull_censure.csv")
+t=d$x
+n=length(t)
+p=6
+```
+
+
+```{r,eval = TRUE}
+a=b=c=d=10**(-3)
+
+neg_log=function(kappa){
+  - dgamma(kappa, c, d, log=TRUE)- p * log(kappa) + (a+n) * log(b+sum(t**kappa))  - (kappa-1) * sum(log(t)[1:p])
+}
+
+
+
+kappa_MAP = optimize(neg_log, interval=c(0.1, 10) )$minimum
+print(kappa_MAP)
+
+hat_v_beta = 1/hessian(neg_log, kappa_MAP)
+print(hat_v_beta)
+
+#on peut calculer l'estimateur MAP de alpha:
+alpha_MAP=p/(sum(t**kappa_MAP))
+print(alpha_MAP)
+```
+
+
+c)  Choisir pour loi instrumentale g la loi Gamma d’espérance égale à $\hat{\kappa}_{MAP}$ et de variance égale à $\sigma_{\kappa MAP}^2$, en vérifiant qu’elle respecte les conditions en 1 pour que le rapport $\frac{\pi(\kappa|t_{1:n},p)}{g(\kappa)}$ soit borné.
+
+----------------------------------------------------------------------
+
+si $g \sim \mathcal G(e,f)$ de moyenne $\hat{\kappa}_{MAP$ et de variance $\hat\sigma_{\kappa MAP}^2$ alors:
+$$
+e=(\frac{\hat{\kappa}_{MAP}}{\hat\sigma_{\kappa MAP}})^2\\
+f=\frac{\hat{\kappa}_{MAP}}{\hat\sigma_{\kappa MAP}^2}
+$$
+
+
+```{r,eval = TRUE}
+e=(kappa_MAP**2)/hat_v_beta
+f=kappa_MAP/hat_v_beta
+
+#vérification des conditions:
+
+if (( e <= n + c ) & ((f < ((a+n)*log(max(t))+d)) | ((f == ((a+n)*log(max(t))+d))&(c<=e)))){
+ print("loi instrumentale conforme")
+}else{ 
+ print("loi instrumentale non conforme")
+}
+```
+
+
+d) Toujours en utilisant la fonction optimize, calculer le sup du quotient $M=sup_\kappa$ $\frac{\pi(\kappa|t_{1:n},p)}{g(\kappa)}$.
+
+
+```{r,eval = TRUE}
+quot_log=function(kappa){
+  -neg_log(kappa)-dgamma(kappa,e,f,log=TRUE)
+}
+
+
+bb = seq(0.1, 10, length.out=100)
+ll = c() 
+for (b in bb){ll=c(ll, quot_log(b))}
+
+plot(bb, ll, type='l')
+
+o=optimize(quot_log,interval=c(0.1,10),maximum=T)
+logM=o$objective
+print(logM)
+```
+
+
+
+
+
+10) Ecrire un programme R qui génère par une méthode d’acceptation-rejet un échantillon $\kappa_1,..,\kappa_G$
+ de taille $G=10000$ selon la densité marginale
+a posteriori $\pi(\kappa|t_{1:n},p)$. Puis, pour $g=1,..,G$, simuler $\alpha_g$ dans la loi conditionnelle a posteriori $\pi(\alpha|t_{1:n},p)$ pour $\kappa=\kappa_g$. Représenter les densités a priori et a posteriori pour chaque paramètre, ainsi que le graphe de corrélation a posteriori du couple
+$(\kappa,\alpha^{-1/\kappa})$.
+
+
+```{r}
+#fonction générant un échantillon simulant la loi conditionnelle de kappa par acceptation rejet
+rf_kappa_post <- function(nsimu){
+ n_accept <- 0
+ n_gen <- 0
+ Y = c() 
+while( n_accept < nsimu){
+ X <- rgamma(1, e, f)
+ n_gen <- n_gen + 1
+ U <- runif(1)
+ accept <- log(U) + logM + dgamma(X, e,f,log=TRUE) <= -neg_log( X ) # tirages acceptés
+if (accept){
+ n_accept <- n_accept + 1
+ Y = c(Y, X) 
+ } 
+ } 
+return( list( X=Y, accept_rate = nsimu / n_gen ) )
+} 
+
+
+```
+
+
+```{r}
+
+nsimu = 10000
+kappa_post = rf_kappa_post(nsimu) 
+
+#estimation de alpha à partir de kappa_post
+alpha_post = c() 
+for (k in kappa_post$X){
+ a = rgamma(1, n+a, b+sum(t^k) )
+ alpha_post = c(alpha_post, a) 
+} 
+
+```
+
+
+
+```{r}
+par(mfrow=c(1,2))
+hist(kappa_post$X, breaks="Scott", probability=TRUE, main="", xlab=TeX('$\\kappa$'))
+curve(dgamma(x,c,d), col='red', add=TRUE)
+abline(v=kappa_MAP, col='blue', lty=1)
+abline(v=quantile(kappa_post$X, .025), col='blue', lty=2)
+abline(v=quantile(kappa_post$X, .975), col='blue', lty=2)
+
+hist(alpha_post, breaks="Scott", probability=TRUE, main="", xlab=TeX('$\\alpha$'))
+curve(dgamma(x,a,b), col='red', add=TRUE)
+abline(v=alpha_MAP, col='blue', lty=1)
+abline(v=quantile(alpha_post, .025), col='blue', lty=2)
+abline(v=quantile(alpha_post, .975), col='blue', lty=2)
+legend( "top", legend=c(TeX("MAP"), "int. cred. 95%"),bty='n', pch=c('_','_'), lty=c(1,2),col=c(4,4))
+```
+
+
+```{r}
+plot(kappa_post$X,alpha_post**(-1/kappa_post$X), col='blue', main="loi jointe a posteriori", xlab=TeX("$\\kappa$"), ylab=TeX("$\\alpha^{-1/\\kappa}$"))
+```
+
+
+
+
+11) Implémenter un algorithme MCMC sous la forme d’une fonction R nommée MCMC qui va permettre d’échantillonner dans la loi jointe a posteriori du couple $(\alpha,\kappa)$ sachant les données $t_{1:n}$ et $p$.
+
+
+
+
+
+```{r}
+#fonction échantillonnant dans la loi jointe (alpha,kappa) par Gibs et MH
+MCMC=function(G,alpha0,kappa0,delta){
+  
+  n_accept=1    #intitialisation du nombre d'échantillons accéptés pour kappa
+  chain=matrix(nrow=G,ncol=2,byrow=T,dimnames=list(NULL,c("alpha","kappa")))
+  
+  alpha_curr=alpha0
+  kappa_curr=kappa0
+  
+  chain[1,1]=alpha_curr
+  chain[1,2]=kappa_curr
+  
+  for (i in 2:G){
+  #échantillonneur de Gibbs pour alpha:
+  alpha_cand=rgamma(1,a+p,b+sum(t**kappa_curr))
+  
+  #échantillonneur de MH pour kappa:
+  accept_k=1
+  kappa_cand=rnorm(1,kappa_curr,delta)
+  if (kappa_cand>0){
+    logr=(-neg_log(kappa_cand)+neg_log(kappa_curr))
+    u=runif(1,0,1)
+    if (log(u)>min(0,logr)){
+      kappa_cand=kappa_curr
+      accept_k=0
+    }
+  }
+  if (kappa_cand<0){  #on n'accepte pas
+    kappa_cand=kappa_curr
+    accept_k=0
+  }
+  n_accept=n_accept+accept_k
+  chain[i,1]=alpha_cand
+  chain[i,2]=kappa_cand
+  kappa_curr=kappa_cand
+  }
+  
+  return(list(chain=chain,taux_accept_k=n_accept/G))
+}
+```
+
+
+
+
+12)  Choix du paramètre de saut $\delta$:Utiliser la fonction MCMC précédemment implémentée pour calculer puis tracer l’évolution du taux d’acceptation associé à la mise à jour de κ en fonction de différentes valeurs
+du paramètre δ. Pour chaque valeur de δ, on pourra faire tourner l’algorithme MCMC pendant G = 10 000 itérations et qu’avec une seule chaîne
+de Markov pour cette étape de calibration. Quelle valeur de δ vous semble
+la meilleure (rappel : viser un taux d’acceptation d’environ 40%) ? Vous
+conserverez cette valeur pour la suite.
+
+
+
+```{r,eval = TRUE}
+G=10000 #nombre d'itérations
+
+#fonction retournant le taux d'acceptation de kappa à partir de la fonction MCMC 
+return_accept_k=function(G,alpha0,kappa0,delta){  
+  return(MCMC(G,alpha0,kappa0,delta)$taux_accept_k)
+}
+
+delta_choice=seq(0.1,1.5,length.out=100)
+taux=lapply(delta_choice,return_accept_k,G=G,alpha0=2,kappa0=0.1)
+M=as.matrix(taux,nrow=1)
+ind=which((M>=0.39)&(M<0.41))[1]
+plot(delta_choice,M,main="taux d'acceptation de kappa",ylab="taux")
+segments(x0=c(delta_choice[ind],delta_choice[ind]),y0=c(M[[ind]],M[[ind]]),x1=c(delta_choice[ind],0),y1=c(0,M[[ind]]),col="red",lty=3)
+```
+```{r}
+print(delta_choice[ind]) #valeur de delta correspondant à un taux de 40%
+```
+
+13) Lancer à présent 3 chaînes de Markov à partir de positions initiales différentes en fixant δ à la valeur précedemment choisie afin de générer un
+échantillon $((\alpha^{(1)},\kappa^{(1)}),...,(\alpha^{(G)},\kappa^{(G)}))$ de taille $G=10000$. Faites un
+examen visuel des chaînes de Markov obtenues et calculer la statistique
+de Gelman-Rubin. Identifiez-vous un problème de convergence de l’algorithme MCMC implémenté vers sa loi stationnaire ? Si oui, comment
+proposez-vous d’y remédier ? Combien d’itérations X vous semblent a minima nécessaires pour espérer avoir atteint l’état stationnaire ?
+
+
+
+```{r,eval = TRUE}
+delta=delta_choice[ind]
+
+kappa1=kappa_MAP
+kappa2=kappa_MAP*10
+kappa3=kappa_MAP/10
+
+alpha1=alpha_MAP
+alpha2=alpha_MAP*10
+alpha3=alpha_MAP/10
+
+
+chain1=MCMC(G,alpha1,kappa1,delta)
+chain2=MCMC(G,alpha2,kappa2,delta)
+chain3=MCMC(G,alpha3,kappa3,delta)
+
+mcmcchains=mcmc.list(mcmc(chain1$chain),mcmc(chain2$chain),mcmc(chain3$chain))
+
+plot(mcmcchains, density=FALSE)
+```
+
+```{r,eval = TRUE}
+model.samples.gg <- ggs(mcmcchains)
+ggs_traceplot(model.samples.gg)
+```
+
+
+On observe qu'il n'y a pas à priori un problème de convergence. D'après la représentation des traces des paramètres $\alpha$ et $\kappa$ les chaînes de Markov générées visitent ,après un certain nombre d'itérations, la même zone correspondante à la loi stationnaire de chaque chaîne.    
+
+
+-Calcul du critère de Gelman_Rubin sur l'ensemble des itérations des trois chaînes de Markov calculées.
+```{r,eval = TRUE}
+gelman.diag(mcmcchains)
+```
+
+-Représentation graphique du critère au cours des itérations.
+```{r,eval = TRUE}
+gelman.plot(mcmcchains)
+```
+
+
+
+On remarque qu'il n'y a pas un problème de convergence. D'après la représentation graphique du critère au cours des itérations, on voit que les courbes se stabilisent à partir de l'itération 3000. Les 3000 premières itérations correspondent au temps de chauffe $X$.
+
+14)Supprimer les $X$ premières itérations correspondant à votre temps-de chauffe "estimé" de l’algorithme afin de constituer votre échantillon a
+posteriori. Calculer la taille d’échantillon effective (ESS) de l’échantillon
+a posteriori constitué. Qu’en pensez-vous ? Si l’ESS vous semble trop petit, refaites tourner l’algorithme en augmentant le nombre d’itérations G
+jusqu’à obtenir un ESS "satisfaisant" pour bien estimer $α$ et $κ$.
+
+```{r}
+#Temps de chauffe estimé
+nburnin = 3000
+
+#Visualisation des chaînes de Markov après avoir supprimé les itérations de temps de chauffe supposé
+mcmcchains <- mcmc.list(list(mcmc(chain1$chain[nburnin:G,]),mcmc(chain2$chain[nburnin:G,]),mcmc(chain3$chain[nburnin:G,])))
+plot(mcmcchains, density=FALSE)
+```
+
+
+On calcule le taille de l'échantillon à posteriori après avoir enlevé les itérations du temps de chauffe:
+
+```{r}
+taille=(G-nburnin)*3
+print(taille)
+```
+
+
+```{r,eval = TRUE}
+Ess=effectiveSize(mcmcchains)
+```
+
+
+```{r,eval = TRUE}
+Respost<- summary(mcmcchains)
+Respost$statistics[,4]< 0.05*Respost$statistics[,2]
+```
+
+On remarque que la taille de l'échantillon effective est suffisante pour bien estimer $\alpha$ et $\kappa$. En effet, l'erreur de Monte-Carlo estimée (Time-series SE) est inférieure à $5\%$ de l'écart-type a posetriori empirique.
+
+
+
+15) Représenter les densités a priori et a posteriori pour chaque paramètre,
+ainsi que le graphe de corrélation a posteriori du couple $(κ, α−1/κ)$. Comparer les résultats issus des deux algorithmes d’inférence bayésienne. Lequel préférez-vous?
+
+```{r}
+Respost
+```
+
+-Les densité à prioiri:
+```{r}
+par(mfrow=c(1,2))
+curve(dgamma(x,a,b), col='red',main=TeX('loi à priori de $\\alpha$'),xlab=TeX('$\\alpha$'),ylab='densité')
+curve(dgamma(x,c,d), col='red',main=TeX('loi à priori de $\\kappa$'),xlab=TeX('$\\kappa$'),ylab='densité')
+```
+
+-Les densité à posteriori:
+```{r}
+plot(mcmcchains,density=T,trace=F)
+```
+
+
+```{r}
+alpha_mcmc=c(mcmc(chain1$chain[nburnin:G,1]),mcmc(chain2$chain[nburnin:G,1]),mcmc(chain3$chain[nburnin:G,1]))
+
+kappa_mcmc=c(mcmc(chain1$chain[nburnin:G,2]),mcmc(chain2$chain[nburnin:G,2]),mcmc(chain3$chain[nburnin:G,2]))
+
+plot(kappa_mcmc,alpha_mcmc**(-1/kappa_mcmc), col='blue', main="loi jointe a posteriori", xlab=TeX("$\\kappa$"), ylab=TeX("$\\alpha^{-1/\\kappa}$"))
+```
+
+
+On remarque qu'au niveau des densités jointes de $\alpha$ et de $\kappa$ il n'y a pas une différence significative entre les historgrammes des deux méthodes d'inférence bayésienne. Cependant, pour les graphes de corrélation a posteriori, on voit que celui de l'algorithme MCMC est plus resséré que celui fait avec l'acceptation rejet à cause de certains outlayers. Il me semble que l'algorithme de l'acceptation rejet est plus performant dans ce cas. 
+
